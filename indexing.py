@@ -12,16 +12,39 @@ import re
 T_ = TypeVar("T_")
 
 
-
 def index_text( pipe: Pipeline, cfg: CollectionConfig,  doc_id: str, text: str):
     """Index text from text field"""
     tokens = tokenize(text, cfg.transl_tbl, cfg.stop_words)
 
-    if len(tokens) > 0:
-        pipe.sadd(f'{cfg.name}/text_tokens', *tokens)
+    if len(tokens) == 0:
+        return
+
+    pipe.sadd(f'{cfg.name}/text_tokens', *tokens)
 
     for tok in tokens:
+        index_pats(pipe, cfg, tok)
         pipe.sadd( key_token( cfg.name, tok), doc_id)
+
+
+def index_pats( pipe: Pipeline, cfg: CollectionConfig, tok: str ):
+    """indexing starting and ending patterns"""
+
+    if len(tok) >= 2:
+        pipe.sadd(f'{cfg.name}/s_pat/{tok[0]}{tok[1]}', tok)
+        pipe.sadd(f'{cfg.name}/e_pat/{tok[-2]}{tok[-1]}', tok)
+
+    if len(tok) >= 3:
+        pipe.sadd(f'{cfg.name}/s_pat/{tok[0]}?{tok[2]}', tok)
+        pipe.sadd(f'{cfg.name}/s_pat/?{tok[1]}{tok[2]}', tok)
+
+        pipe.sadd(f'{cfg.name}/e_pat/{tok[-2]}?{tok[-1]}', tok)
+        pipe.sadd(f'{cfg.name}/e_pat/{tok[-3]}{tok[-2]}?', tok)
+
+    if len(tok) >= 4:
+        pipe.sadd(f'{cfg.name}/s_pat/{tok[0]}??{tok[3]}', tok)
+        pipe.sadd(f'{cfg.name}/s_pat/?{tok[1]}?{tok[3]}', tok)
+        pipe.sadd(f'{cfg.name}/e_pat/{tok[-4]}??{tok[-1]}', tok)
+        pipe.sadd(f'{cfg.name}/e_pat/{tok[-4]}?{tok[-2]}?', tok)
 
 
 def tokenize(text: str, trans_tabl: str, stop_words: Set[str]) -> List[str]:

@@ -9,6 +9,7 @@ import uuid
 import datetime as dt
 
 from redis.client import Pipeline
+from redis import Redis
 
 import common as com
 from common import Key, Field
@@ -123,17 +124,50 @@ class ContainsApprox( Expr ):
 
         self.patterns = patterns
 
-    def eval(self, ctx: SearchContext) -> Key:
+    def eval(self, ctx: SearchContext) -> List[Key]:
         red = ctx.pipe
         # col_name = ctx.col.name
+        s_pref = f"{ctx.col.name}/s_pat"
+        e_pref = f"{ctx.col.name}/e_pat"
+
+        ret = []
+        for pat in self.patterns:
+            if len(pat) >= 3:
+                if pat[0] != '?' and pat[1] != '?':
+                    ret.extend( scan( red, f"{s_pref}/{pat[:2]}", pat ) )
+                elif pat[0] != '?' and pat[2] != '?':
+                    ret.extend(scan(red, f"{s_pref}/{pat[0]}?{pat[2]}", pat))
+                elif pat[1] != '?' and pat[2] != '?':
+                    ret.extend(scan(red, f"{s_pref}/?{pat[1]}{pat[2]}", pat))
+                # ending patterns
+                elif pat[-1] != '?' and pat[-2] != '?':
+                    ret.extend(scan(red, f"{e_pref}/{pat[-2]}{pat[-1]}", pat))
+                elif pat[-1] != '?' and pat[-3] != '?':
+                    ret.extend(scan(red, f"{e_pref}/{pat[-3]}?{pat[-1]}", pat))
+                elif pat[-2] != '?' and pat[-3] != '?':
+                    ret.extend(scan(red, f"{e_pref}/{pat[-3]}{pat[-2]}?", pat))
+                else:
+                    raise NotImplementedError( pat )
+            else:
+                raise NotImplementedError( pat )
+
+        return ret
+
+    def eval0(self, ctx: SearchContext) -> Key:
+        """old version scanning text_tokens directly"""
+        red = ctx.pipe
         tokens_key = f"{ctx.col.name}/text_tokens"
 
         ret = []
         for pat in self.patterns:
-            for tok in red.sscan_iter(tokens_key, match=pat, count=100000):
-                ret.append( tok )
+            ret.extend( list(red.sscan_iter(tokens_key, match=pat, count=100000)))
 
         return ret
+
+
+def scan( redis: Redis, key: str, pat: str ):
+    """Retrieve results from scaning a key and matching against a pattern"""
+    return list( redis.sscan_iter(key, match=pat, count=10000) )
 
 # %%
 
@@ -215,57 +249,3 @@ def run_search( col: Collection, search_expr: Expr ) -> List[Key]:
 
     return col.redis.smembers(key)
 
-
-def interactive_testing( col: Collection):
-    # %%
-    # noinspection PyUnresolvedReferences
-    runfile("search.py")  # pylint: disable=undefined-variable
-
-    expr = ContainsApprox("cobre", max_typos=2)
-
-    red = col.redis
-    # with col.redis.pipeline() as pipe:
-    # for i in range(3): red.ping()
-    ctx = SearchContext(col, col.redis)
-    reload( com )
-    com.timeit( lambda: expr.eval( ctx ) )
-    # pipe.execute()
-    # %%
-    script = """
-    local extend = function( t1, t2 )
-        for _, el in ipairs(t2) do
-            table.insert( t1, el )
-        end
-        return t1
-    end
-    
-    local search = function (key, pat)
-       
-       local cur = '0' 
-       local res = {}
-       while 1 do
-         local r = redis.call('sscan', key, cur, 'match', pat, 'count', '25000' )
-         
-         extend( res, r[2] )
-         if r[1] == '0' then
-            break
-         end
-         cur = r[1]
-       end
-       return res
-    end
-    
-    local res = {}
-    for _, arg in ipairs( ARGV ) do
-        res = extend( res, search(KEYS[1], arg) )
-    end
-    
-    return res 
-    """
-
-    t0 = dt.datetime.now()
-    ret = col.redis.eval( script, 1, f'{col.name}/text_tokens', *expr.patterns)
-    t1 = dt.datetime.now()
-
-    print( (t1 - t0).total_seconds() * 1000, len(ret) )
-    # %%

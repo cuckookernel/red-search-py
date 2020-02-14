@@ -7,13 +7,13 @@ import redis
 import search as sch
 import indexing as idx
 from common import f
-import collection
+import collection as coll
 from collection import Collection, CollectionConfig
 from util import clear_collection
 import common as com
 
-reload(collection)
 reload( idx )
+reload( coll )
 reload( sch )
 # %%
 
@@ -71,7 +71,7 @@ def create_and_populte_quijote( redis_conn ):
     # %%
     clear_collection(col)
     # %%
-    com.timeit( lambda: collection.index_documents(col, docs, batch_size=100) )
+    com.timeit( lambda: coll.index_documents(col, docs, batch_size=100) )
     # %%
 
 
@@ -112,3 +112,61 @@ def testing_qxt( col ):
     col.redis.ping()
     # %%
     col.redis.sscan( b'qxt/text_tokens', count=1000000 )
+
+
+def search_testing(col: Collection):
+    """interactive_testing"""
+    # %%
+    # noinspection PyUnresolvedReferences
+    reload( sch )
+
+    expr = sch.ContainsApprox("cobre", max_typos=2)
+
+    red = col.redis
+    # with col.redis.pipeline() as pipe:
+    # for i in range(3): red.ping()
+    ctx = sch.SearchContext(col, col.redis)
+    reload(com)
+    ret = com.timeit(lambda: expr.eval(ctx))
+    print( len( ret), 'tokens' )
+    # pipe.execute()
+    # %%
+    script = """
+    local extend = function( t1, t2 )
+        for _, el in ipairs(t2) do
+            table.insert( t1, el )
+        end
+        return t1
+    end
+
+    local search = function (key, pat)
+
+       local cur = '0' 
+       local res = {}
+       while 1 do
+         local r = redis.call('sscan', key, cur, 'match', pat, 'count', '25000' )
+
+         extend( res, r[2] )
+         if r[1] == '0' then
+            break
+         end
+         cur = r[1]
+       end
+       return res
+    end
+
+    local res = {}
+    for _, arg in ipairs( ARGV ) do
+        res = extend( res, search(KEYS[1], arg) )
+    end
+
+    return res 
+    """
+
+    t0 = dt.datetime.now()
+    ret = col.redis.eval(script, 1, f'{col.name}/text_tokens', *expr.patterns)
+    t1 = dt.datetime.now()
+
+    print((t1 - t0).total_seconds() * 1000, len(ret))
+    # %%
+
